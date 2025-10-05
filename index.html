@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Карта Франции</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+html, body, #map { height:100%; margin:0; padding:0; }
+body { font-family: Arial, sans-serif; }
+.coords { font-size:13px; color:#444; margin:4px 0; }
+.hotels { margin:6px 0 0 16px; }
+#form { display:none; position:absolute; top:10px; left:10px; background:white; padding:10px; border:1px solid #ccc; z-index:1000; width:300px; }
+#form input, #form textarea { width:100%; margin-bottom:5px; }
+#form button { margin-right:5px; }
+#buttons { position:absolute; top:10px; right:10px; z-index:1000; background:white; padding:5px; border:1px solid #ccc; }
+#buttons button { margin-right:5px; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="form">
+  <label>Название:<br><input id="title" type="text"></label>
+  <label>Ссылка Google Maps:<br><input id="link" type="text" placeholder="https://www.google.com/maps/..."></label>
+  <label>Отели / описание:<br><textarea id="hotels" rows="4"></textarea></label>
+  <button id="saveBtn">Сохранить</button>
+  <button id="cancelBtn">Отмена</button>
+</div>
+
+<div id="buttons">
+  <button id="exportBtn">Экспорт JSON</button>
+  <input type="file" id="importFile" style="display:none;">
+  <button id="importBtn">Импорт JSON</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map', { center: [46.7, 2.4], zoom: 6 });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+
+const markersGroup = L.featureGroup().addTo(map);
+let editingMarker = null;
+
+const form = document.getElementById('form');
+const titleInput = document.getElementById('title');
+const linkInput = document.getElementById('link');
+const hotelsInput = document.getElementById('hotels');
+const saveBtn = document.getElementById('saveBtn');
+const cancelBtn = document.getElementById('cancelBtn');
+
+const exportBtn = document.getElementById('exportBtn');
+const importBtn = document.getElementById('importBtn');
+const importFile = document.getElementById('importFile');
+
+// --- Встроенные маркеры (можно добавлять свои) ---
+const initialMarkers = [
+  {
+    lat: 48.85837,
+    lng: 2.29448,
+    title: "Эйфелева башня",
+    googleLink: "https://www.google.com/maps/@48.85837,2.29448,17z",
+    hotels: ["Отель 1 — описание", "Отель 2 — описание"]
+  },
+  {
+    lat: 48.86061,
+    lng: 2.33764,
+    title: "Лувр",
+    googleLink: "https://www.google.com/maps/@48.86061,2.33764,17z",
+    hotels: []
+  }
+];
+
+// --- Извлечение координат из Google Maps ссылки ---
+function getLatLngFromGoogleLink(url) {
+  try {
+    const matchAt = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if(matchAt) return {lat:parseFloat(matchAt[1]), lng:parseFloat(matchAt[2])};
+    const matchQ = url.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if(matchQ) return {lat:parseFloat(matchQ[1]), lng:parseFloat(matchQ[2])};
+    const matchPlace = url.match(/\/@(-?\d+\.\d+),(-?\d+\.\d+),/);
+    if(matchPlace) return {lat:parseFloat(matchPlace[1]), lng:parseFloat(matchPlace[2])};
+  } catch(e){ return null; }
+  return null;
+}
+
+// --- Сохранение маркеров в localStorage ---
+function saveMarkers() {
+  const data = markersGroup.getLayers().map(marker => ({
+    lat: marker.getLatLng().lat,
+    lng: marker.getLatLng().lng,
+    title: marker.options.title,
+    googleLink: marker.options.googleLink,
+    hotels: marker.options.hotels
+  }));
+  localStorage.setItem('myMapMarkers', JSON.stringify(data));
+}
+
+// --- Подстройка карты под все маркеры ---
+function fitMapToMarkers() {
+  const layers = markersGroup.getLayers();
+  if(layers.length > 0){
+    const bounds = L.latLngBounds(layers.map(m => m.getLatLng()));
+    map.fitBounds(bounds, {padding:[50,50]});
+  }
+}
+
+// --- Создание маркера ---
+function createMarker(data, center=true) {
+  const marker = L.marker([data.lat,data.lng]).addTo(markersGroup);
+  marker.options.title = data.title;
+  marker.options.googleLink = data.googleLink;
+  marker.options.hotels = data.hotels;
+  marker.bindPopup(`
+    <strong>${data.title}</strong>
+    <div class="coords">Широта: ${data.lat.toFixed(5)}, Долгота: ${data.lng.toFixed(5)}</div>
+    ${data.hotels.length ? '<ul class="hotels">'+data.hotels.map(h=>`<li>${h}</li>`).join('')+'</ul>' : '<div class="small">Отели не указаны</div>'}
+    <div><a href="${data.googleLink}" target="_blank">Открыть в Google Maps</a></div>
+  `);
+
+  marker.on('click',function(){
+    editingMarker = marker;
+    titleInput.value = marker.options.title;
+    linkInput.value = marker.options.googleLink;
+    hotelsInput.value = marker.options.hotels.join('\n');
+    form.style.display='block';
+  });
+
+  if(center) fitMapToMarkers();
+}
+
+// --- Клик по карте для нового маркера ---
+map.on('click', function(e){
+  editingMarker = null;
+  titleInput.value = '';
+  linkInput.value = '';
+  hotelsInput.value = '';
+  form.style.display='block';
+});
+
+// --- Сохранение данных из формы ---
+saveBtn.onclick = function(){
+  const title = titleInput.value.trim();
+  const link = linkInput.value.trim();
+  const hotelsText = hotelsInput.value.trim();
+  const hotels = hotelsText ? hotelsText.split("\n").map(h=>h.trim()).filter(Boolean) : [];
+
+  if(!title || !link){ alert("Название и ссылка Google Maps обязательны"); return; }
+
+  const coordsObj = getLatLngFromGoogleLink(link);
+  if(!coordsObj){ alert("Не удалось извлечь координаты из ссылки!"); return; }
+  const {lat,lng} = coordsObj;
+  const data = {lat,lng,title,googleLink:link,hotels};
+
+  if(editingMarker){
+    editingMarker.setLatLng([lat,lng]);
+    editingMarker.options.title = title;
+    editingMarker.options.googleLink = link;
+    editingMarker.options.hotels = hotels;
+    editingMarker.bindPopup(`
+      <strong>${title}</strong>
+      <div class="coords">Широта: ${lat.toFixed(5)}, Долгота: ${lng.toFixed(5)}</div>
+      ${hotels.length ? '<ul class="hotels">'+hotels.map(h=>`<li>${h}</li>`).join('')+'</ul>' : '<div class="small">Отели не указаны</div>'}
+      <div><a href="${link}" target="_blank">Открыть в Google Maps</a></div>
+    `).openPopup();
+  } else createMarker(data);
+
+  saveMarkers();
+  form.style.display='none';
+};
+
+// --- Отмена формы ---
+cancelBtn.onclick = function(){ form.style.display='none'; };
+
+// --- Экспорт в JSON ---
+exportBtn.onclick = function(){
+  const data = markersGroup.getLayers().map(marker=>({
+    lat: marker.getLatLng().lat,
+    lng: marker.getLatLng().lng,
+    title: marker.options.title,
+    googleLink: marker.options.googleLink,
+    hotels: marker.options.hotels
+  }));
+  const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='markers.json'; a.click();
+};
+
+// --- Импорт из JSON ---
+importBtn.onclick = ()=>importFile.click();
+importFile.onchange = e => {
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = evt => {
+    try{
+      const data = JSON.parse(evt.target.result);
+      markersGroup.clearLayers();
+      data.forEach(item=>createMarker(item,false));
+      saveMarkers();
+      fitMapToMarkers();
+    }catch(err){ alert("Ошибка при загрузке файла"); }
+  };
+  reader.readAsText(file);
+};
+
+// --- Загрузка встроенных маркеров ---
+initialMarkers.forEach(m=>createMarker(m,false));
+fitMapToMarkers();
+</script>
+</body>
+</html>
